@@ -1,0 +1,2 @@
+colorlog==4.7.2
+coloredlogs==15.0
