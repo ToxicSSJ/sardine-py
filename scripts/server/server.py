@@ -59,7 +59,7 @@ class Server:
         self._app.add_url_rule('/master/space/<bytes>', view_func=self._spacemaster, methods=["GET"])
         self._app.add_url_rule('/master/chunks/upload', view_func=self._uploadchunkmaster, methods=["PUT"])
         self._app.add_url_rule('/master/single/upload', view_func=self._uploadsinglemaster, methods=["PUT"])
-        self._app.add_url_rule('/master/chunks/download/<hash>', view_func=self._downloadchunkmaster, methods=["PUT"])
+        self._app.add_url_rule('/master/chunks/download/<hash>', view_func=self._downloadchunkmaster, methods=["GET"])
         self._app.add_url_rule('/master/single/download/<hash>', view_func=self._downloadsinglemaster, methods=["GET"])
 
     def start(self):
@@ -252,14 +252,18 @@ class Server:
             for candidate in candidates:
                 index = 1
                 max = candidate['partition']['max']
+                self.logger.info('Set start point for index=(' + str(index) + ') and max=(' + str(max) + ')...')
                 break
 
+        self.logger.info('Finding candidate for current index...')
         found = False
 
         for candidate in candidates.copy():
+            self.logger.info(str(candidate))
             if index == candidate['partition']['index']:
                 found = True
                 current = candidate
+                self.logger.info('Found candidate for index=(' + str(index) + ')!')
                 break
 
         if found == False or current == None:
@@ -268,18 +272,23 @@ class Server:
         candidates.remove(current)
 
         self.logger.info('Downloading part (' + str(index) + ' of  ' + str(max) + ') from candidate (' + current['server'] + ')...')
-        response = self._serverGetRequest(current['server'], '/chunks/download/' + hash)
+        response = self._serverGetRequest(current['server'], '/chunks/download/' + hash + '/' + str(index))
+
+        self.logger.info('Response code: ' + str(response.status_code))
 
         if response.status_code != 200:
+            time.sleep(1000)
             return self._downloadchunkmastercandidate(hash=hash, index=index, max=max, candidates=candidates, total=total)
 
         json = response.json()['response']
 
         if total == None:
-            total.append(json['data'])
+            total = json['data']
+        else:
+            total += json['data']
 
         if index == max:
-            return self._response(200, { 'filename': json['filename'], 'data': json['data'] })
+            return self._response(200, { 'filename': json['filename'], 'data': total })
 
         return self._downloadchunkmastercandidate(hash=hash, index=index + 1, max=max, candidates=candidates, total=total)
 
@@ -356,7 +365,7 @@ class Server:
             File = Query()
             results = self.files.search(File.fragment({'hash': original_checksum, 'type': 'chunk'}))
 
-            if len(results) == 0:
+            '''if len(results) == 0:
 
                 self.files.insert(
                     {
@@ -379,7 +388,23 @@ class Server:
                 self.files.update({'type': 'chunk', 'hash': original_checksum, 'uploadname': name, 'filename': temp}, (File.hash == original_checksum) & (File.partition.checksum == hash) & (File.partition.index == chunk_index))
                 self.logger.info('Replacing file (' + original_checksum + ')[' + name + '] into this node!')
 
-                return self._message(200, 'UPLOADED')
+                return self._message(200, 'UPLOADED')'''
+
+            self.files.insert(
+                {
+                    'type': 'chunk',
+                    'hash': original_checksum,
+                    'uploadname': name,
+                    'filename': temp,
+                    'partition': {
+                        'checksum': hash,
+                        'index': chunk_index,
+                        'max': chunk_max
+                    }
+                })
+            self.logger.info('Uploaded new chunk to (' + original_checksum + ')[' + name + '] into this node!')
+
+            return self._message(200, 'CHUNK UPLOADED')
 
         except binascii.Error:
             return self._message(400, 'INVALID PAYLOAD')
@@ -592,7 +617,7 @@ class Server:
                 chunk_index = body['partition']['index']
                 chunk_max = body['partition']['max']
 
-            if len(results) == 0:
+            '''if len(results) == 0:
 
                 self.files.insert({'type': 'one', 'hash': hash, 'uploadname': name, 'filename': temp})
                 self.logger.info('Uploaded new file (' + hash + ')[' + name + '] into this node!')
@@ -604,7 +629,12 @@ class Server:
                 self.files.update({'type': 'one', 'hash': hash, 'uploadname': name, 'filename': temp}, File.hash == hash)
                 self.logger.info('Replacing file (' + hash + ')[' + name + '] into this node!')
 
-                return self._message(200, 'UPLOADED')
+                return self._message(200, 'UPLOADED') '''
+
+            self.files.insert({'type': 'one', 'hash': hash, 'uploadname': name, 'filename': temp})
+            self.logger.info('Uploaded new file (' + hash + ')[' + name + '] into this node!')
+
+            return self._message(200, 'UPLOADED')
 
         except binascii.Error:
             return self._message(400, 'INVALID PAYLOAD')
@@ -647,7 +677,11 @@ class Server:
             url = self.config['master']['main'] + route
             return requests.get(url=url)
         except requests.exceptions.RequestException as e:
-            return None
+            try:
+                url = self.config['master']['fallback'] + route
+                return requests.get(url=url)
+            except requests.exceptions.RequestException as e:
+                return None
 
     def _response(self, code, json):
         return {'code': code, 'response': json}
